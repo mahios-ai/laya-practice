@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Laya Decision Studio — @receptron/laya Sample</title>
+    <title>Laya Decision Studio — @receptron/laya + Local SQLite</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -12,9 +12,15 @@
         <div class="brand-mark">L</div>
         <div>
           <h1>Laya Decision Studio</h1>
-          <p class="subtitle">System-1 single-pass decision model via <code>@receptron/laya</code> + ONNX Runtime</p>
+          <p class="subtitle">Local System-1 classification via <code>@receptron/laya</code> + <code>node:sqlite</code></p>
         </div>
       </div>
+
+      <nav class="main-nav" aria-label="Workspace modes">
+        <button id="nav-sqlite-btn" class="nav-tab active" type="button">Jira + SQLite Pipeline</button>
+        <button id="nav-playground-btn" class="nav-tab" type="button">Prompt Playground</button>
+      </nav>
+
       <div class="status-group">
         <div id="model-badge" class="badge badge-loading">
           <span class="dot"></span>
@@ -25,115 +31,208 @@
     </header>
 
     <main class="container">
-      <section class="presets-bar">
-        <span class="section-label">Presets</span>
-        <div id="preset-buttons" class="preset-buttons"></div>
+      <!-- VIEW 1: Jira + Local SQLite Pipeline -->
+      <section id="sqlite-view">
+        <div class="flow-strip">
+          <span class="flow-node">1. UI Action (Button / Tab)</span>
+          <span class="flow-arrow">→</span>
+          <span class="flow-node">2. API (<code>POST /api/tickets/classify</code>)</span>
+          <span class="flow-arrow">→</span>
+          <span class="flow-node">3. Local SQLite (<code>data/jira_edp.sqlite</code>)</span>
+          <span class="flow-arrow">→</span>
+          <span class="flow-node">4. Laya <code>systemOne()</code></span>
+          <span class="flow-arrow">→</span>
+          <span class="flow-node">5. Structured DB Response</span>
+        </div>
+
+        <div id="sqlite-error-banner" class="error-banner hidden"></div>
+
+        <div class="panel sqlite-controls-panel">
+          <div class="sqlite-toolbar">
+            <div class="toolbar-actions">
+              <button id="classify-pending-btn" class="btn btn-primary" type="button">Classify Unclassified</button>
+              <button id="reclassify-all-btn" class="btn btn-secondary" type="button">Re-classify All</button>
+              <button id="toggle-add-ticket-btn" class="btn btn-secondary" type="button">+ Add Jira Ticket</button>
+              <button id="reset-tickets-btn" class="btn btn-ghost" type="button">Reset Demo DB</button>
+            </div>
+
+            <div class="toolbar-right">
+              <div class="threshold-inline">
+                <label for="sqlite-threshold-slider">Confidence Gate:</label>
+                <input id="sqlite-threshold-slider" type="range" min="0.50" max="0.95" step="0.01" value="0.75" />
+                <strong id="sqlite-threshold-value">0.75</strong>
+              </div>
+              <div class="filter-pills" id="ticket-filters">
+                <button class="filter-pill active" data-filter="all" type="button">All</button>
+                <button class="filter-pill" data-filter="escalation" type="button">Escalation Risk</button>
+                <button class="filter-pill" data-filter="review" type="button">Needs Review</button>
+                <button class="filter-pill" data-filter="unclassified" type="button">Unclassified</button>
+              </div>
+            </div>
+          </div>
+
+          <form id="add-ticket-form" class="add-ticket-form hidden">
+            <div class="form-grid">
+              <div>
+                <label class="q-field-label" for="new-customer">Customer</label>
+                <input id="new-customer" class="input-sm" required placeholder="e.g., Globex Corp" />
+              </div>
+              <div>
+                <label class="q-field-label" for="new-priority">Priority</label>
+                <select id="new-priority" class="select-sm full-width">
+                  <option value="High">High</option>
+                  <option value="Medium" selected>Medium</option>
+                  <option value="Low">Low</option>
+                </select>
+              </div>
+              <div class="span-2">
+                <label class="q-field-label" for="new-summary">Ticket Summary</label>
+                <input id="new-summary" class="input-sm" required placeholder="e.g., API tokens returning 403 after password reset" />
+              </div>
+              <div class="span-2">
+                <label class="q-field-label" for="new-comments">Customer Comments (one per line)</label>
+                <textarea id="new-comments" class="code-editor" rows="3" placeholder="Customer: We cannot log in since this morning.&#10;Customer: Please treat this as urgent, our release is blocked."></textarea>
+              </div>
+            </div>
+            <div class="form-actions">
+              <button class="btn btn-primary" type="submit">Save to SQLite</button>
+              <button id="cancel-add-ticket-btn" class="btn btn-ghost" type="button">Cancel</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="metrics-row sqlite-kpis">
+          <div class="metric-card">
+            <span class="metric-label">SQLite Tickets</span>
+            <strong id="kpi-total">0</strong>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Classified</span>
+            <strong id="kpi-classified">0</strong>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Escalation Risk (&ge; 50%)</span>
+            <strong id="kpi-escalation">0</strong>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Needs Review</span>
+            <strong id="kpi-review">0</strong>
+          </div>
+        </div>
+
+        <div id="tickets-list" class="tickets-list"></div>
       </section>
 
-      <div class="workspace-grid">
-        <!-- Left column: State & Questions -->
-        <section class="panel input-panel">
-          <div class="panel-header">
-            <div>
-              <h2>1. State Input</h2>
-              <p id="state-mode-hint" class="hint">Accepts JSON object, message array, or raw text.</p>
-            </div>
-            <button id="format-state-btn" class="btn btn-ghost" type="button">Format JSON</button>
-          </div>
-          <textarea
-            id="state-input"
-            class="code-editor state-editor"
-            spellcheck="false"
-            placeholder='{"subject": "...", "body": "..."}'
-          ></textarea>
+      <!-- VIEW 2: Prompt Playground -->
+      <section id="playground-view" class="hidden">
+        <section class="presets-bar">
+          <span class="section-label">Presets</span>
+          <div id="preset-buttons" class="preset-buttons"></div>
+        </section>
 
-          <div class="panel-header questions-header">
-            <div>
-              <h2>2. Typed Questions</h2>
-              <p class="hint">All questions evaluate together in a single forward pass.</p>
-            </div>
-            <div class="tab-switch">
-              <button id="mode-builder-btn" class="tab-btn active" type="button">Builder</button>
-              <button id="mode-json-btn" class="tab-btn" type="button">Raw JSON</button>
-            </div>
-          </div>
-
-          <div id="questions-builder" class="questions-builder">
-            <div id="question-cards" class="question-cards"></div>
-            <div class="add-question-row">
-              <button class="btn btn-secondary" type="button" data-add-type="choice">+ Choice</button>
-              <button class="btn btn-secondary" type="button" data-add-type="score">+ Score</button>
-              <button class="btn btn-secondary" type="button" data-add-type="noul">+ Noul (Yes/No)</button>
-            </div>
-          </div>
-
-          <div id="questions-json-wrap" class="hidden">
-            <textarea
-              id="questions-json-input"
-              class="code-editor questions-editor"
-              spellcheck="false"
-            ></textarea>
-          </div>
-
-          <div class="eval-footer">
-            <div class="threshold-control">
-              <div class="threshold-label-row">
-                <label for="threshold-slider">System-1 Confidence Gate</label>
-                <strong id="threshold-value">0.75</strong>
+        <div class="workspace-grid">
+          <section class="panel input-panel">
+            <div class="panel-header">
+              <div>
+                <h2>1. State Input</h2>
+                <p id="state-mode-hint" class="hint">Accepts JSON object, message array, or raw text.</p>
               </div>
-              <input id="threshold-slider" type="range" min="0.50" max="0.99" step="0.01" value="0.75" />
+              <button id="format-state-btn" class="btn btn-ghost" type="button">Format JSON</button>
+            </div>
+            <textarea
+              id="state-input"
+              class="code-editor state-editor"
+              spellcheck="false"
+              placeholder='{"subject": "...", "body": "..."}'
+            ></textarea>
+
+            <div class="panel-header questions-header">
+              <div>
+                <h2>2. Typed Questions</h2>
+                <p class="hint">All questions evaluate together in a single forward pass.</p>
+              </div>
+              <div class="tab-switch">
+                <button id="mode-builder-btn" class="tab-btn active" type="button">Builder</button>
+                <button id="mode-json-btn" class="tab-btn" type="button">Raw JSON</button>
+              </div>
             </div>
 
-            <button id="evaluate-btn" class="btn btn-primary" type="button">
-              <span>Evaluate Forward Pass</span>
-              <kbd>Ctrl+Enter</kbd>
-            </button>
-          </div>
-        </section>
-
-        <!-- Right column: Calibrated Results -->
-        <section class="panel output-panel">
-          <div class="panel-header">
-            <div>
-              <h2>3. Calibrated Decisions</h2>
-              <p class="hint">Probabilities and gating decisions returned by <code>laya.systemOne()</code>.</p>
+            <div id="questions-builder" class="questions-builder">
+              <div id="question-cards" class="question-cards"></div>
+              <div class="add-question-row">
+                <button class="btn btn-secondary" type="button" data-add-type="choice">+ Choice</button>
+                <button class="btn btn-secondary" type="button" data-add-type="score">+ Score</button>
+                <button class="btn btn-secondary" type="button" data-add-type="noul">+ Noul (Yes/No)</button>
+              </div>
             </div>
-            <div id="gate-summary" class="gate-summary hidden"></div>
-          </div>
 
-          <div id="error-banner" class="error-banner hidden"></div>
-
-          <div id="metrics-row" class="metrics-row hidden">
-            <div class="metric-card">
-              <span class="metric-label">Forward Pass</span>
-              <strong id="metric-latency">—</strong>
+            <div id="questions-json-wrap" class="hidden">
+              <textarea
+                id="questions-json-input"
+                class="code-editor questions-editor"
+                spellcheck="false"
+              ></textarea>
             </div>
-            <div class="metric-card">
-              <span class="metric-label">Input Tokens</span>
-              <strong id="metric-tokens">—</strong>
-            </div>
-            <div class="metric-card">
-              <span class="metric-label">Questions</span>
-              <strong id="metric-questions">—</strong>
-            </div>
-            <div class="metric-card">
-              <span class="metric-label">Model</span>
-              <strong id="metric-model">—</strong>
-            </div>
-          </div>
 
-          <div id="results-empty" class="empty-state">
-            <p>Select a preset or edit the state and questions on the left, then click <strong>Evaluate Forward Pass</strong>.</p>
-          </div>
+            <div class="eval-footer">
+              <div class="threshold-control">
+                <div class="threshold-label-row">
+                  <label for="threshold-slider">System-1 Confidence Gate</label>
+                  <strong id="threshold-value">0.75</strong>
+                </div>
+                <input id="threshold-slider" type="range" min="0.50" max="0.99" step="0.01" value="0.75" />
+              </div>
 
-          <div id="results-list" class="results-list"></div>
+              <button id="evaluate-btn" class="btn btn-primary" type="button">
+                <span>Evaluate Forward Pass</span>
+                <kbd>Ctrl+Enter</kbd>
+              </button>
+            </div>
+          </section>
 
-          <details id="raw-json-details" class="raw-json-details hidden">
-            <summary>Raw <code>SystemOneResult</code> JSON</summary>
-            <pre id="raw-json-output"></pre>
-          </details>
-        </section>
-      </div>
+          <section class="panel output-panel">
+            <div class="panel-header">
+              <div>
+                <h2>3. Calibrated Decisions</h2>
+                <p class="hint">Probabilities and gating decisions returned by <code>laya.systemOne()</code>.</p>
+              </div>
+              <div id="gate-summary" class="gate-summary hidden"></div>
+            </div>
+
+            <div id="error-banner" class="error-banner hidden"></div>
+
+            <div id="metrics-row" class="metrics-row hidden">
+              <div class="metric-card">
+                <span class="metric-label">Forward Pass</span>
+                <strong id="metric-latency">—</strong>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">Input Tokens</span>
+                <strong id="metric-tokens">—</strong>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">Questions</span>
+                <strong id="metric-questions">—</strong>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">Model</span>
+                <strong id="metric-model">—</strong>
+              </div>
+            </div>
+
+            <div id="results-empty" class="empty-state">
+              <p>Select a preset or edit the state and questions on the left, then click <strong>Evaluate Forward Pass</strong>.</p>
+            </div>
+
+            <div id="results-list" class="results-list"></div>
+
+            <details id="raw-json-details" class="raw-json-details hidden">
+              <summary>Raw <code>SystemOneResult</code> JSON</summary>
+              <pre id="raw-json-output"></pre>
+            </details>
+          </section>
+        </div>
+      </section>
     </main>
 
     <script type="module" src="/app.js"></script>

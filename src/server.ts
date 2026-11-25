@@ -3,6 +3,12 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Laya, type LayaConfig, type Question } from "@receptron/laya";
+import {
+  JIRA_CLASSIFICATION_QUESTIONS,
+  JiraSqliteStore,
+  type JiraClassificationRecord,
+  type JiraTicketRow,
+} from "./db.js";
 import { SAMPLE_PRESETS } from "./presets.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -37,6 +43,8 @@ const modelState: ModelState = {
   error: null,
 };
 
+const jiraStore = new JiraSqliteStore();
+
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -44,6 +52,15 @@ const MIME_TYPES: Record<string, string> = {
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
 };
+
+class RequestError extends Error {
+  constructor(
+    public readonly statusCode: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 function sendJson(res: ServerResponse, statusCode: number, payload: unknown): void {
   const body = JSON.stringify(payload);
@@ -79,13 +96,14 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   }
 }
 
-class RequestError extends Error {
-  constructor(
-    public readonly statusCode: number,
-    message: string,
-  ) {
-    super(message);
+function assertModelReady(): Laya {
+  if (modelState.status === "loading") {
+    throw new RequestError(503, "Model is still loading. Try again in a moment.");
   }
+  if (modelState.status === "error" || !modelState.instance) {
+    throw new RequestError(500, modelState.error ?? "Model failed to initialize.");
+  }
+  return modelState.instance;
 }
 
 function validateQuestions(input: unknown): Record<string, Question> {
@@ -103,39 +121,63 @@ function validateQuestions(input: unknown): Record<string, Question> {
       throw new RequestError(400, `Question '${key}' must be an object.`);
     }
     const spec = q as Record<string, unknown>;
-    if (spec.instructions === undefined || (typeof spec.instructions !== "string" && typeof spec.instructions !== "object")) {
+    if (
+      spec.instructions === undefined ||
+      (typeof spec.instructions !== "string" && typeof spec.instructions !== "object")
+    ) {
       throw new RequestError(400, `Question '${key}' requires 'instructions' (string or object).`);
     }
 
     if (spec.type === "choice") {
-      const validCriteria =
-        Array.isArray(spec.criteria)
-          ? spec.criteria.length >= 2 && spec.criteria.every((c) => typeof c === "string" && c.trim().length > 0)
-          : Boolean(spec.criteria && typeof spec.criteria === "object" && Object.keys(spec.criteria).length >= 2);
+      const validCriteria = Array.isArray(spec.criteria)
+        ? spec.criteria.length >= 2 && spec.criteria.every((c) => typeof c === "string" && c.trim().length > 0)
+        : Boolean(spec.criteria && typeof spec.criteria === "object" && Object.keys(spec.criteria).length >= 2);
       if (!validCriteria) {
         throw new RequestError(400, `Choice question '${key}' needs at least 2 options in 'criteria'.`);
       }
     } else if (spec.type === "score") {
-      if (!Array.isArray(spec.criteria) || spec.criteria.length < 2 || !spec.criteria.every((c) => typeof c === "string")) {
+      if (
+        !Array.isArray(spec.criteria) ||
+        spec.criteria.length < 2 ||
+        !spec.criteria.every((c) => typeof c === "string")
+      ) {
         throw new RequestError(400, `Score question '${key}' needs an array of at least 2 string levels in 'criteria'.`);
       }
     } else if (spec.type !== "noul") {
-      throw new RequestError(400, `Question '${key}' has unsupported type '${String(spec.type)}'. Expected 'choice', 'score', or 'noul'.`);
+      throw new RequestError(
+        400,
+        `Question '${key}' has unsupported type '${String(spec.type)}'. Expected 'choice', 'score', or 'noul'.`,
+      );
     }
   }
 
   return input as Record<string, Question>;
 }
 
+function summarizeTickets(tickets: JiraTicketRow[]) {
+  let classified = 0;
+  let escalationAlerts = 0;
+  let needsReview = 0;
+
+  for (const t of tickets) {
+    if (t.classification) {
+      classified += 1;
+      if (t.classification.escalation_risk >= 0.5) escalationAlerts += 1;
+      if (t.classification.needs_review) needsReview += 1;
+    }
+  }
+
+  return {
+    total: tickets.length,
+    classified,
+    unclassified: tickets.length - classified,
+    escalationAlerts,
+    needsReview,
+  };
+}
+
 async function handleEvaluate(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  if (modelState.status === "loading") {
-    sendJson(res, 503, { error: "Model is still loading. Try again in a moment." });
-    return;
-  }
-  if (modelState.status === "error" || !modelState.instance) {
-    sendJson(res, 500, { error: modelState.error ?? "Model failed to initialize." });
-    return;
-  }
+  const laya = assertModelReady();
 
   const body = await readJsonBody(req);
   if (!body || typeof body !== "object" || Array.isArray(body)) {
@@ -161,7 +203,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse): Promis
   const t0 = performance.now();
   let result;
   try {
-    result = await modelState.instance.systemOne(state, validatedQuestions);
+    result = await laya.systemOne(state, validatedQuestions);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw new RequestError(400, `Laya inference failed: ${message}`);
@@ -177,6 +219,116 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse): Promis
     latencyMs,
     confidenceThreshold: threshold,
     gatedQuestions,
+  });
+}
+
+async function handleAddTicket(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = await readJsonBody(req);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new RequestError(400, "Payload must be a JSON object.");
+  }
+
+  const { ticket_key, customer, summary, description, priority, status, comments } = body as Record<string, unknown>;
+  if (typeof customer !== "string" || !customer.trim()) {
+    throw new RequestError(400, "'customer' is required.");
+  }
+  if (typeof summary !== "string" || !summary.trim()) {
+    throw new RequestError(400, "'summary' is required.");
+  }
+
+  const normalizedComments = Array.isArray(comments)
+    ? comments.map((c) => String(c).trim()).filter(Boolean)
+    : typeof comments === "string"
+      ? comments
+          .split(/\r?\n/)
+          .map((c) => c.trim())
+          .filter(Boolean)
+      : [];
+
+  try {
+    const ticket = jiraStore.addTicket({
+      ticket_key: typeof ticket_key === "string" ? ticket_key : undefined,
+      customer,
+      summary,
+      description: typeof description === "string" ? description : undefined,
+      priority: typeof priority === "string" ? priority : undefined,
+      status: typeof status === "string" ? status : undefined,
+      comments: normalizedComments,
+    });
+    sendJson(res, 201, { ticket });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new RequestError(400, `Failed to insert ticket into SQLite: ${message}`);
+  }
+}
+
+async function handleClassifyTickets(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const laya = assertModelReady();
+
+  let body: Record<string, unknown> = {};
+  try {
+    const parsed = await readJsonBody(req);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      body = parsed as Record<string, unknown>;
+    }
+  } catch (err) {
+    if (err instanceof RequestError && err.message === "Request body must not be empty.") {
+      body = {};
+    } else {
+      throw err;
+    }
+  }
+
+  const ticketKeys = Array.isArray(body.ticketKeys) ? body.ticketKeys.map(String) : undefined;
+  const reclassify = Boolean(body.reclassify);
+  const threshold =
+    typeof body.confidenceThreshold === "number" && body.confidenceThreshold >= 0 && body.confidenceThreshold <= 1
+      ? body.confidenceThreshold
+      : 0.75;
+
+  const candidates = jiraStore.listTickets(ticketKeys);
+  const targets = ticketKeys ? candidates : reclassify ? candidates : candidates.filter((t) => !t.classification);
+
+  let totalLatencyMs = 0;
+  for (const ticket of targets) {
+    const state = {
+      key: ticket.ticket_key,
+      customer: ticket.customer,
+      priority: ticket.priority,
+      status: ticket.status,
+      summary: ticket.summary,
+      description: ticket.description,
+      comments: ticket.comments,
+    };
+
+    const t0 = performance.now();
+    const result = await laya.systemOne(state, JIRA_CLASSIFICATION_QUESTIONS);
+    const latencyMs = Number((performance.now() - t0).toFixed(2));
+    totalLatencyMs += latencyMs;
+
+    const record: JiraClassificationRecord = {
+      ticket_key: ticket.ticket_key,
+      category: result.answers.category.choice,
+      category_confidence: result.answers.category.answer_confidence,
+      frustration_score: result.answers.customer_frustration.score,
+      frustration_confidence: result.answers.customer_frustration.answer_confidence,
+      escalation_risk: result.answers.escalation_risk.noul,
+      escalation_confidence: result.answers.escalation_risk.answer_confidence,
+      needs_review: result.answers.category.answer_confidence < threshold,
+      latency_ms: latencyMs,
+      raw_result: result,
+      classified_at: new Date().toISOString(),
+    };
+    jiraStore.saveClassification(record);
+  }
+
+  const allTickets = jiraStore.listTickets();
+  sendJson(res, 200, {
+    classifiedCount: targets.length,
+    totalLatencyMs: Number(totalLatencyMs.toFixed(2)),
+    confidenceThreshold: threshold,
+    summary: summarizeTickets(allTickets),
+    tickets: allTickets,
   });
 }
 
@@ -257,6 +409,37 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/api/tickets") {
+      const tickets = jiraStore.listTickets();
+      sendJson(res, 200, {
+        tickets,
+        summary: summarizeTickets(tickets),
+        questions: JIRA_CLASSIFICATION_QUESTIONS,
+      });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/tickets") {
+      await handleAddTicket(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/tickets/classify") {
+      await handleClassifyTickets(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/tickets/reset") {
+      jiraStore.reset();
+      const tickets = jiraStore.listTickets();
+      sendJson(res, 200, {
+        ok: true,
+        tickets,
+        summary: summarizeTickets(tickets),
+      });
+      return;
+    }
+
     if (req.method === "GET") {
       await serveStatic(url.pathname, res);
       return;
@@ -281,6 +464,7 @@ server.listen(PORT, HOST, () => {
 async function shutdown(): Promise<void> {
   console.log("\n[Server] Shutting down...");
   server.close();
+  jiraStore.close();
   if (modelState.instance) {
     await modelState.instance.close();
   }

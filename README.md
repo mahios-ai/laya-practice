@@ -1,21 +1,20 @@
 # Laya Decision Studio (`laya-practice`)
 
-An interactive TypeScript web app, HTTP API, and CLI sample built with [`@receptron/laya`](https://github.com/receptron/laya) — running the **Laya** System-1 decision model locally in Node.js via ONNX Runtime without Python.
+A 100% local TypeScript web app, HTTP API, local SQLite pipeline, and CLI sample built with [`@receptron/laya`](https://github.com/receptron/laya) — running the **Laya** System-1 decision model locally in Node.js via ONNX Runtime without Python or any cloud APIs.
 
 ## Features
 
-- **Single-pass structured decisions**: Evaluate `choice`, `score`, and `noul` (calibrated yes/no probability) questions together in one forward pass via `laya.systemOne(state, questions)`.
-- **Interactive Web Studio**:
-  - Load real-world presets (Support Ticket Triage, Conversation Escalation, Engineering Issue Routing, Content Moderation).
-  - Edit `state` as JSON objects, conversation arrays, or plain text.
-  - Build or edit typed questions visually or via raw JSON.
-  - Experiment with **System-1 Confidence Gating** (`answer_confidence` threshold slider) to see which decisions can execute immediately vs. escalate to a System-2 LLM/human.
-- **HTTP API**: `GET /api/health`, `GET /api/presets`, `POST /api/evaluate`.
+- **Local Jira + SQLite Pipeline (`node:sqlite` + Laya)**:
+  - Seeds a local SQLite database ([`data/jira_edp.sqlite`](src/db.ts)) mimicking Jira tickets & customer comment threads synced into an EDP/warehouse.
+  - Clicking **Classify Unclassified** (or calling `POST /api/tickets/classify`) reads rows from SQLite, classifies each ticket's `category` (`choice`), `customer_frustration` (`score`), and `escalation_risk` (`noul`) in a single forward pass, stores the structured results back into SQLite, and returns the structured JSON response.
+  - Supports adding new Jira tickets (`POST /api/tickets`), filtering by escalation risk or confidence gate (`Needs Review`), and resetting the demo DB (`POST /api/tickets/reset`).
+- **Interactive Prompt Playground**:
+  - Load presets (Support Ticket Triage, Conversation Escalation, Engineering Issue Routing, Content Moderation), edit states/questions, and test System-1 confidence gating.
 - **CLI Demo**: Run all presets from the terminal with latency and gating diagnostics.
 
 ## Prerequisites
 
-- **Node.js 20+**
+- **Node.js 22.5+** (uses built-in `node:sqlite` and `@receptron/laya`)
 - **~2 GB RAM** for the loaded ONNX session
 - **~1.7 GB disk space** for the cached ONNX model weights (`~/.cache/receptron-laya`, overridable via `LAYA_CACHE`)
 
@@ -31,6 +30,9 @@ npm run download-model
 # 3. Start the web studio & API server (http://127.0.0.1:3000)
 npm start
 
+# Or run the standalone Jira + SQLite classification sample
+npm run jira-sample
+
 # Or run the standalone CLI benchmark across all presets
 npm run cli
 
@@ -39,45 +41,18 @@ npm run typecheck
 npm run build
 ```
 
-## Environment Variables
+## Local SQLite Pipeline API Endpoints
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `PORT` | `3000` | HTTP server port |
-| `HOST` | `127.0.0.1` | HTTP bind host |
-| `LAYA_CACHE` | `~/.cache/receptron-laya` | Local cache directory for downloaded Hugging Face weights |
-| `LAYA_MODEL_DIR` | _(unset)_ | Path to a local ONNX bundle directory (skips Hugging Face download) |
-| `LAYA_SUBFOLDER` | _(unset)_ | Hugging Face repo subfolder (e.g., `multilingual`) |
+- `GET /api/tickets` — List all Jira tickets and persisted classifications from `data/jira_edp.sqlite`.
+- `POST /api/tickets` — Insert a new Jira ticket (`{ customer, summary, priority?, comments }`) into SQLite.
+- `POST /api/tickets/classify` — Query SQLite tickets, run `laya.systemOne()`, persist structured results in `jira_classifications`, and return the updated records.
+- `POST /api/tickets/reset` — Reset `data/jira_edp.sqlite` back to the 6 seeded Jira tickets.
 
-## API Example
+### Example `curl` Flow
 
 ```bash
-curl -X POST http://127.0.0.1:3000/api/evaluate \
+# Classify all unclassified Jira tickets in local SQLite
+curl -X POST http://127.0.0.1:3000/api/tickets/classify \
   -H "Content-Type: application/json" \
-  -d '{
-    "confidenceThreshold": 0.75,
-    "state": {
-      "subject": "Refund not received",
-      "body": "I cancelled two weeks ago and still have no refund."
-    },
-    "questions": {
-      "department": {
-        "type": "choice",
-        "instructions": "Which team should handle this ticket?",
-        "criteria": {
-          "billing": "payments, refunds, invoices",
-          "support": "product help and bugs"
-        }
-      },
-      "urgency": {
-        "type": "score",
-        "instructions": "How urgent is this ticket?",
-        "criteria": ["not urgent", "somewhat urgent", "urgent", "critical"]
-      },
-      "churn_risk": {
-        "type": "noul",
-        "instructions": "Is the customer likely to cancel or dispute?"
-      }
-    }
-  }'
+  -d '{"confidenceThreshold": 0.75}'
 ```

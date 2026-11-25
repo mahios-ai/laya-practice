@@ -1,7 +1,34 @@
 const els = {
+  navSqliteBtn: document.getElementById("nav-sqlite-btn"),
+  navPlaygroundBtn: document.getElementById("nav-playground-btn"),
+  sqliteView: document.getElementById("sqlite-view"),
+  playgroundView: document.getElementById("playground-view"),
   modelBadge: document.getElementById("model-badge"),
   modelStatusText: document.getElementById("model-status-text"),
   modelMeta: document.getElementById("model-meta"),
+
+  // SQLite Pipeline elements
+  sqliteErrorBanner: document.getElementById("sqlite-error-banner"),
+  classifyPendingBtn: document.getElementById("classify-pending-btn"),
+  reclassifyAllBtn: document.getElementById("reclassify-all-btn"),
+  toggleAddTicketBtn: document.getElementById("toggle-add-ticket-btn"),
+  resetTicketsBtn: document.getElementById("reset-tickets-btn"),
+  sqliteThresholdSlider: document.getElementById("sqlite-threshold-slider"),
+  sqliteThresholdValue: document.getElementById("sqlite-threshold-value"),
+  ticketFilters: document.getElementById("ticket-filters"),
+  addTicketForm: document.getElementById("add-ticket-form"),
+  cancelAddTicketBtn: document.getElementById("cancel-add-ticket-btn"),
+  newCustomer: document.getElementById("new-customer"),
+  newPriority: document.getElementById("new-priority"),
+  newSummary: document.getElementById("new-summary"),
+  newComments: document.getElementById("new-comments"),
+  kpiTotal: document.getElementById("kpi-total"),
+  kpiClassified: document.getElementById("kpi-classified"),
+  kpiEscalation: document.getElementById("kpi-escalation"),
+  kpiReview: document.getElementById("kpi-review"),
+  ticketsList: document.getElementById("tickets-list"),
+
+  // Playground elements
   presetButtons: document.getElementById("preset-buttons"),
   stateInput: document.getElementById("state-input"),
   stateModeHint: document.getElementById("state-mode-hint"),
@@ -29,11 +56,30 @@ const els = {
 };
 
 let presets = [];
-let activePresetId = null;
-let questionMode = "builder"; // "builder" | "json"
+let ticketsData = [];
+let ticketFilter = "all";
+let questionMode = "builder";
 let questionsObj = {};
 let lastEvalResponse = null;
 let modelReady = false;
+
+function switchMainTab(tab) {
+  const isSqlite = tab === "sqlite";
+  els.navSqliteBtn.classList.toggle("active", isSqlite);
+  els.navPlaygroundBtn.classList.toggle("active", !isSqlite);
+  els.sqliteView.classList.toggle("hidden", !isSqlite);
+  els.playgroundView.classList.toggle("hidden", isSqlite);
+}
+
+function showSqliteError(message) {
+  if (!message) {
+    els.sqliteErrorBanner.classList.add("hidden");
+    els.sqliteErrorBanner.textContent = "";
+    return;
+  }
+  els.sqliteErrorBanner.textContent = message;
+  els.sqliteErrorBanner.classList.remove("hidden");
+}
 
 function showError(message) {
   if (!message) {
@@ -44,6 +90,265 @@ function showError(message) {
   els.errorBanner.textContent = message;
   els.errorBanner.classList.remove("hidden");
 }
+
+function syncModelButtons() {
+  els.evaluateBtn.disabled = !modelReady;
+  els.classifyPendingBtn.disabled = !modelReady;
+  els.reclassifyAllBtn.disabled = !modelReady;
+  for (const btn of els.ticketsList.querySelectorAll("[data-classify-key]")) {
+    btn.disabled = !modelReady;
+  }
+}
+
+// =====================================================================
+// Jira + SQLite Pipeline View
+// =====================================================================
+
+function renderTickets() {
+  const threshold = Number(els.sqliteThresholdSlider.value);
+
+  let classified = 0;
+  let escalationAlerts = 0;
+  let needsReview = 0;
+
+  for (const t of ticketsData) {
+    if (t.classification) {
+      classified += 1;
+      if (t.classification.escalation_risk >= 0.5) escalationAlerts += 1;
+      if (t.classification.category_confidence < threshold) needsReview += 1;
+    }
+  }
+
+  els.kpiTotal.textContent = String(ticketsData.length);
+  els.kpiClassified.textContent = String(classified);
+  els.kpiEscalation.textContent = String(escalationAlerts);
+  els.kpiReview.textContent = String(needsReview);
+
+  const filtered = ticketsData.filter((t) => {
+    if (ticketFilter === "escalation") return Boolean(t.classification && t.classification.escalation_risk >= 0.5);
+    if (ticketFilter === "review") return Boolean(t.classification && t.classification.category_confidence < threshold);
+    if (ticketFilter === "unclassified") return !t.classification;
+    return true;
+  });
+
+  els.ticketsList.innerHTML = "";
+  if (filtered.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "No Jira tickets match the selected filter.";
+    els.ticketsList.appendChild(empty);
+    return;
+  }
+
+  for (const t of filtered) {
+    const cls = t.classification;
+    const isReview = Boolean(cls && cls.category_confidence < threshold);
+    const isEsc = Boolean(cls && cls.escalation_risk >= 0.5);
+
+    const card = document.createElement("div");
+    card.className = `ticket-card${isEsc ? " ticket-escalation" : isReview ? " ticket-review" : ""}`;
+
+    const top = document.createElement("div");
+    top.className = "ticket-top";
+
+    const left = document.createElement("div");
+    const titleRow = document.createElement("div");
+    titleRow.className = "ticket-title-row";
+
+    const keyBadge = document.createElement("span");
+    keyBadge.className = "ticket-key";
+    keyBadge.textContent = t.ticket_key;
+
+    const cust = document.createElement("span");
+    cust.className = "ticket-customer";
+    cust.textContent = `${t.customer} · Priority: ${t.priority} · Status: ${t.status}`;
+
+    titleRow.append(keyBadge, cust);
+
+    if (cls) {
+      const gateChip = document.createElement("span");
+      gateChip.className = `gate-chip ${isReview ? "gate-escalate" : "gate-pass"}`;
+      gateChip.textContent = isReview
+        ? `Needs Review (${(cls.category_confidence * 100).toFixed(1)}%)`
+        : `Auto-Tagged (${(cls.category_confidence * 100).toFixed(1)}%)`;
+      titleRow.appendChild(gateChip);
+    } else {
+      const pendingChip = document.createElement("span");
+      pendingChip.className = "gate-chip";
+      pendingChip.style.background = "rgba(148,163,184,0.18)";
+      pendingChip.style.color = "#cbd5e1";
+      pendingChip.textContent = "Unclassified in SQLite";
+      titleRow.appendChild(pendingChip);
+    }
+
+    const summary = document.createElement("p");
+    summary.className = "ticket-summary";
+    summary.textContent = t.summary;
+    left.append(titleRow, summary);
+
+    if (t.description) {
+      const desc = document.createElement("p");
+      desc.className = "ticket-desc";
+      desc.textContent = t.description;
+      left.appendChild(desc);
+    }
+
+    const actionBtn = document.createElement("button");
+    actionBtn.type = "button";
+    actionBtn.className = "btn btn-secondary";
+    actionBtn.dataset.classifyKey = t.ticket_key;
+    actionBtn.disabled = !modelReady;
+    actionBtn.textContent = cls ? "Re-classify" : "Classify";
+    actionBtn.addEventListener("click", () => classifyTickets([t.ticket_key], true));
+
+    top.append(left, actionBtn);
+    card.appendChild(top);
+
+    if (t.comments && t.comments.length > 0) {
+      const commentsBox = document.createElement("div");
+      commentsBox.className = "ticket-comments";
+      for (const c of t.comments) {
+        const line = document.createElement("div");
+        line.textContent = c;
+        commentsBox.appendChild(line);
+      }
+      card.appendChild(commentsBox);
+    }
+
+    if (cls) {
+      const grid = document.createElement("div");
+      grid.className = "ticket-classifications";
+
+      const catBox = document.createElement("div");
+      catBox.className = "cls-box";
+      catBox.innerHTML = `
+        <span class="cls-box-label">Category (choice)</span>
+        <span class="cls-box-value">${cls.category}</span>
+        <span class="cls-box-sub">confidence: ${(cls.category_confidence * 100).toFixed(1)}%</span>
+      `;
+
+      const frustLabels = ["calm", "concerned", "frustrated", "critical"];
+      const frustIdx = Math.min(3, Math.max(0, Math.round(cls.frustration_score)));
+      const frustBox = document.createElement("div");
+      frustBox.className = "cls-box";
+      frustBox.innerHTML = `
+        <span class="cls-box-label">Frustration (score 0..3)</span>
+        <span class="cls-box-value ${cls.frustration_score >= 1.8 ? "cls-warn" : ""}">${cls.frustration_score.toFixed(2)} (${frustLabels[frustIdx]})</span>
+        <span class="cls-box-sub">answer_conf: ${(cls.frustration_confidence * 100).toFixed(1)}%</span>
+      `;
+
+      const escBox = document.createElement("div");
+      escBox.className = "cls-box";
+      escBox.innerHTML = `
+        <span class="cls-box-label">Escalation Risk (noul)</span>
+        <span class="cls-box-value ${cls.escalation_risk >= 0.5 ? "cls-danger" : "cls-ok"}">${(cls.escalation_risk * 100).toFixed(1)}%</span>
+        <span class="cls-box-sub">latency: ${cls.latency_ms.toFixed(0)} ms</span>
+      `;
+
+      grid.append(catBox, frustBox, escBox);
+      card.appendChild(grid);
+
+      const details = document.createElement("details");
+      details.className = "raw-json-details";
+      const sum = document.createElement("summary");
+      sum.textContent = `Structured Response stored in SQLite (classified ${new Date(cls.classified_at).toLocaleTimeString()})`;
+      const pre = document.createElement("pre");
+      pre.textContent = JSON.stringify(cls, null, 2);
+      details.append(sum, pre);
+      card.appendChild(details);
+    }
+
+    els.ticketsList.appendChild(card);
+  }
+}
+
+async function fetchTickets() {
+  showSqliteError(null);
+  const res = await fetch("/api/tickets");
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  ticketsData = data.tickets || [];
+  renderTickets();
+}
+
+async function classifyTickets(ticketKeys, reclassify) {
+  if (!modelReady) {
+    showSqliteError("Model is still loading. Please wait until the status badge turns Ready.");
+    return;
+  }
+
+  showSqliteError(null);
+  const threshold = Number(els.sqliteThresholdSlider.value);
+  els.classifyPendingBtn.disabled = true;
+  els.reclassifyAllBtn.disabled = true;
+
+  const prevText = els.classifyPendingBtn.textContent;
+  els.classifyPendingBtn.textContent = "Classifying...";
+
+  try {
+    const res = await fetch("/api/tickets/classify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ticketKeys,
+        reclassify,
+        confidenceThreshold: threshold,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    ticketsData = data.tickets || [];
+    renderTickets();
+  } catch (err) {
+    showSqliteError(err instanceof Error ? err.message : String(err));
+  } finally {
+    els.classifyPendingBtn.textContent = prevText;
+    syncModelButtons();
+  }
+}
+
+async function resetTickets() {
+  showSqliteError(null);
+  const res = await fetch("/api/tickets/reset", { method: "POST" });
+  const data = await res.json();
+  if (!res.ok) {
+    showSqliteError(data.error || `HTTP ${res.status}`);
+    return;
+  }
+  ticketsData = data.tickets || [];
+  renderTickets();
+}
+
+async function submitNewTicket(e) {
+  e.preventDefault();
+  showSqliteError(null);
+
+  const payload = {
+    customer: els.newCustomer.value,
+    priority: els.newPriority.value,
+    summary: els.newSummary.value,
+    comments: els.newComments.value,
+  };
+
+  try {
+    const res = await fetch("/api/tickets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    els.addTicketForm.reset();
+    els.addTicketForm.classList.add("hidden");
+    await fetchTickets();
+  } catch (err) {
+    showSqliteError(err instanceof Error ? err.message : String(err));
+  }
+}
+
+// =====================================================================
+// Prompt Playground View
+// =====================================================================
 
 function parseStateValue(raw) {
   const trimmed = raw.trim();
@@ -81,18 +386,14 @@ function updateStateModeHint() {
 
 function formatCriteriaText(q) {
   if (q.type === "choice") {
-    if (Array.isArray(q.criteria)) {
-      return q.criteria.join("\n");
-    }
+    if (Array.isArray(q.criteria)) return q.criteria.join("\n");
     if (q.criteria && typeof q.criteria === "object") {
       return Object.entries(q.criteria)
         .map(([k, v]) => (v ? `${k}: ${v}` : k))
         .join("\n");
     }
   }
-  if (q.type === "score" && Array.isArray(q.criteria)) {
-    return q.criteria.join("\n");
-  }
+  if (q.type === "score" && Array.isArray(q.criteria)) return q.criteria.join("\n");
   return "";
 }
 
@@ -102,15 +403,11 @@ function parseCriteriaText(type, text) {
     .map((l) => l.trim())
     .filter(Boolean);
 
-  if (type === "score") {
-    return lines;
-  }
+  if (type === "score") return lines;
 
   if (type === "choice") {
     const hasDescriptions = lines.some((l) => l.includes(":"));
-    if (!hasDescriptions) {
-      return lines;
-    }
+    if (!hasDescriptions) return lines;
     const map = {};
     for (const line of lines) {
       const idx = line.indexOf(":");
@@ -130,9 +427,7 @@ function parseCriteriaText(type, text) {
 
 function renderQuestionBuilder() {
   els.questionCards.innerHTML = "";
-  const entries = Object.entries(questionsObj);
-
-  for (const [key, q] of entries) {
+  for (const [key, q] of Object.entries(questionsObj)) {
     const card = document.createElement("div");
     card.className = "q-card";
 
@@ -247,8 +542,7 @@ function setQuestionMode(mode) {
   if (mode === questionMode) return;
   if (mode === "builder") {
     try {
-      const parsed = JSON.parse(els.questionsJsonInput.value);
-      questionsObj = parsed;
+      questionsObj = JSON.parse(els.questionsJsonInput.value);
       renderQuestionBuilder();
       showError(null);
     } catch {
@@ -298,7 +592,6 @@ function addQuestion(type) {
 }
 
 function applyPreset(preset) {
-  activePresetId = preset.id;
   for (const btn of els.presetButtons.querySelectorAll(".preset-btn")) {
     btn.classList.toggle("active", btn.dataset.presetId === preset.id);
   }
@@ -478,16 +771,14 @@ async function evaluate() {
       }),
     });
     const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || `HTTP ${res.status}`);
-    }
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     lastEvalResponse = data;
     renderResults();
   } catch (err) {
     showError(err instanceof Error ? err.message : String(err));
   } finally {
-    els.evaluateBtn.disabled = false;
     els.evaluateBtn.innerHTML = originalLabel;
+    syncModelButtons();
   }
 }
 
@@ -504,7 +795,7 @@ async function pollHealth() {
         els.modelMeta.textContent = `max_len=${health.config.max_len} · head_max_len=${health.config.head_max_len}`;
         els.modelMeta.classList.remove("hidden");
       }
-      els.evaluateBtn.disabled = false;
+      syncModelButtons();
       return;
     }
 
@@ -513,12 +804,13 @@ async function pollHealth() {
       els.modelBadge.className = "badge badge-error";
       els.modelStatusText.textContent = "Model Error";
       showError(health.error || "Model failed to load.");
-      els.evaluateBtn.disabled = true;
+      showSqliteError(health.error || "Model failed to load.");
+      syncModelButtons();
       return;
     }
 
     modelReady = false;
-    els.evaluateBtn.disabled = true;
+    syncModelButtons();
     els.modelBadge.className = "badge badge-loading";
     if (health.progress && health.progress.total) {
       const pct = ((health.progress.received / health.progress.total) * 100).toFixed(0);
@@ -533,8 +825,40 @@ async function pollHealth() {
 }
 
 async function init() {
-  els.evaluateBtn.disabled = true;
+  syncModelButtons();
 
+  // Main tabs
+  els.navSqliteBtn.addEventListener("click", () => switchMainTab("sqlite"));
+  els.navPlaygroundBtn.addEventListener("click", () => switchMainTab("playground"));
+
+  // SQLite Pipeline listeners
+  els.classifyPendingBtn.addEventListener("click", () => classifyTickets(undefined, false));
+  els.reclassifyAllBtn.addEventListener("click", () => classifyTickets(undefined, true));
+  els.resetTicketsBtn.addEventListener("click", resetTickets);
+  els.toggleAddTicketBtn.addEventListener("click", () => {
+    els.addTicketForm.classList.toggle("hidden");
+  });
+  els.cancelAddTicketBtn.addEventListener("click", () => {
+    els.addTicketForm.classList.add("hidden");
+  });
+  els.addTicketForm.addEventListener("submit", submitNewTicket);
+
+  els.sqliteThresholdSlider.addEventListener("input", () => {
+    els.sqliteThresholdValue.textContent = Number(els.sqliteThresholdSlider.value).toFixed(2);
+    renderTickets();
+  });
+
+  for (const pill of els.ticketFilters.querySelectorAll(".filter-pill")) {
+    pill.addEventListener("click", () => {
+      ticketFilter = pill.dataset.filter;
+      for (const p of els.ticketFilters.querySelectorAll(".filter-pill")) {
+        p.classList.toggle("active", p === pill);
+      }
+      renderTickets();
+    });
+  }
+
+  // Playground listeners
   els.stateInput.addEventListener("input", updateStateModeHint);
   els.formatStateBtn.addEventListener("click", () => {
     try {
@@ -561,13 +885,13 @@ async function init() {
 
   els.evaluateBtn.addEventListener("click", evaluate);
   document.addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !els.playgroundView.classList.contains("hidden")) {
       e.preventDefault();
       evaluate();
     }
   });
 
-  const presetsRes = await fetch("/api/presets");
+  const [presetsRes] = await Promise.all([fetch("/api/presets"), fetchTickets()]);
   const presetsJson = await presetsRes.json();
   presets = presetsJson.presets || [];
 

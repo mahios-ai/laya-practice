@@ -7,6 +7,7 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "cli": "tsx src/cli.ts",
+    "jira-sample": "tsx src/jira-sample.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "download-model": "node -e \"import('@receptron/laya').then((m) => m.ensureBundle())\""
