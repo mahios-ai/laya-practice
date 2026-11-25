@@ -1,6 +1,8 @@
 # Laya Decision Studio (`laya-practice`)
 
-A 100% local TypeScript web app, HTTP API, local SQLite pipeline, and CLI sample built with [`@receptron/laya`](https://github.com/receptron/laya) — running the **Laya** System-1 decision model locally in Node.js via ONNX Runtime without Python or any cloud APIs.
+An interactive 100% local TypeScript web app, HTTP API, local SQLite pipeline, and CLI sample built with [`@receptron/laya`](https://github.com/receptron/laya) — running the **Laya** System-1 decision model locally in Node.js via ONNX Runtime without Python or any cloud APIs.
+
+> **Architecture Proposal:** See [PROPOSED_SOLUTION.md](PROPOSED_SOLUTION.md) for the full AWS multi-source Support Shift Dashboard architecture (Snowflake, Jira, Seeq, Smartsheet, SharePoint, OneNote, Outlook) with Dynamic Skills, Dynamic Tooling, Agent Boundaries, and Laya + Bedrock hybrid scoring.
 
 ## Features
 
