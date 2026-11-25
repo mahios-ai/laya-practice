@@ -1,0 +1,22 @@
+{
+  "name": "laya-practice",
+  "version": "1.0.0",
+  "description": "Interactive sample web app and API powered by @receptron/laya (System-1 decision model)",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "cli": "tsx src/cli.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "download-model": "node -e \"import('@receptron/laya').then((m) => m.ensureBundle())\""
+  },
+  "dependencies": {
+    "@receptron/laya": "^0.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

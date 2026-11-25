@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Laya Decision Studio — @receptron/laya Sample</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">L</div>
+        <div>
+          <h1>Laya Decision Studio</h1>
+          <p class="subtitle">System-1 single-pass decision model via <code>@receptron/laya</code> + ONNX Runtime</p>
+        </div>
+      </div>
+      <div class="status-group">
+        <div id="model-badge" class="badge badge-loading">
+          <span class="dot"></span>
+          <span id="model-status-text">Initializing model...</span>
+        </div>
+        <div id="model-meta" class="meta-pill hidden"></div>
+      </div>
+    </header>
+
+    <main class="container">
+      <section class="presets-bar">
+        <span class="section-label">Presets</span>
+        <div id="preset-buttons" class="preset-buttons"></div>
+      </section>
+
+      <div class="workspace-grid">
+        <!-- Left column: State & Questions -->
+        <section class="panel input-panel">
+          <div class="panel-header">
+            <div>
+              <h2>1. State Input</h2>
+              <p id="state-mode-hint" class="hint">Accepts JSON object, message array, or raw text.</p>
+            </div>
+            <button id="format-state-btn" class="btn btn-ghost" type="button">Format JSON</button>
+          </div>
+          <textarea
+            id="state-input"
+            class="code-editor state-editor"
+            spellcheck="false"
+            placeholder='{"subject": "...", "body": "..."}'
+          ></textarea>
+
+          <div class="panel-header questions-header">
+            <div>
+              <h2>2. Typed Questions</h2>
+              <p class="hint">All questions evaluate together in a single forward pass.</p>
+            </div>
+            <div class="tab-switch">
+              <button id="mode-builder-btn" class="tab-btn active" type="button">Builder</button>
+              <button id="mode-json-btn" class="tab-btn" type="button">Raw JSON</button>
+            </div>
+          </div>
+
+          <div id="questions-builder" class="questions-builder">
+            <div id="question-cards" class="question-cards"></div>
+            <div class="add-question-row">
+              <button class="btn btn-secondary" type="button" data-add-type="choice">+ Choice</button>
+              <button class="btn btn-secondary" type="button" data-add-type="score">+ Score</button>
+              <button class="btn btn-secondary" type="button" data-add-type="noul">+ Noul (Yes/No)</button>
+            </div>
+          </div>
+
+          <div id="questions-json-wrap" class="hidden">
+            <textarea
+              id="questions-json-input"
+              class="code-editor questions-editor"
+              spellcheck="false"
+            ></textarea>
+          </div>
+
+          <div class="eval-footer">
+            <div class="threshold-control">
+              <div class="threshold-label-row">
+                <label for="threshold-slider">System-1 Confidence Gate</label>
+                <strong id="threshold-value">0.75</strong>
+              </div>
+              <input id="threshold-slider" type="range" min="0.50" max="0.99" step="0.01" value="0.75" />
+            </div>
+
+            <button id="evaluate-btn" class="btn btn-primary" type="button">
+              <span>Evaluate Forward Pass</span>
+              <kbd>Ctrl+Enter</kbd>
+            </button>
+          </div>
+        </section>
+
+        <!-- Right column: Calibrated Results -->
+        <section class="panel output-panel">
+          <div class="panel-header">
+            <div>
+              <h2>3. Calibrated Decisions</h2>
+              <p class="hint">Probabilities and gating decisions returned by <code>laya.systemOne()</code>.</p>
+            </div>
+            <div id="gate-summary" class="gate-summary hidden"></div>
+          </div>
+
+          <div id="error-banner" class="error-banner hidden"></div>
+
+          <div id="metrics-row" class="metrics-row hidden">
+            <div class="metric-card">
+              <span class="metric-label">Forward Pass</span>
+              <strong id="metric-latency">—</strong>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Input Tokens</span>
+              <strong id="metric-tokens">—</strong>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Questions</span>
+              <strong id="metric-questions">—</strong>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Model</span>
+              <strong id="metric-model">—</strong>
+            </div>
+          </div>
+
+          <div id="results-empty" class="empty-state">
+            <p>Select a preset or edit the state and questions on the left, then click <strong>Evaluate Forward Pass</strong>.</p>
+          </div>
+
+          <div id="results-list" class="results-list"></div>
+
+          <details id="raw-json-details" class="raw-json-details hidden">
+            <summary>Raw <code>SystemOneResult</code> JSON</summary>
+            <pre id="raw-json-output"></pre>
+          </details>
+        </section>
+      </div>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
